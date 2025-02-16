@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,17 +34,26 @@ func TestRestorePluginV2_AppliesTo(t *testing.T) {
 }
 
 func TestRestorePluginV2_Execute(t *testing.T) {
-	t.Run("Updates Deployment Replicas", func(t *testing.T) {
+	t.Run("Updates Deployment container image and preserves tag", func(t *testing.T) {
 		deployment := appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-deployment",
 				Namespace: "test-namespace",
 				Annotations: map[string]string{
-					"eth-eks.velero/replicas-value-after-recovery": "3",
+					"eth-eks.velero/container-image": "new-registry/app",
 				},
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(1),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "app",
+								Image: "old-registry/app:v1.2.3",
+							},
+						},
+					},
+				},
 			},
 		}
 
@@ -51,8 +61,6 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 		if err != nil {
 			t.Errorf("Error converting Deployment to unstructured: %v", err)
 		}
-
-		// Add kind information
 		deploymentUnstructured["kind"] = "Deployment"
 
 		input := &velero.RestoreItemActionExecuteInput{
@@ -70,24 +78,38 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 			t.Errorf("Error executing plugin: %v", err)
 		}
 
-		got := output.UpdatedItem.UnstructuredContent()["spec"].(map[string]interface{})["replicas"]
-		want := int64(3)
+		var updatedDeployment appsv1.Deployment
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(output.UpdatedItem.UnstructuredContent(), &updatedDeployment); err != nil {
+			t.Errorf("Error converting output to Deployment: %v", err)
+		}
+
+		got := updatedDeployment.Spec.Template.Spec.Containers[0].Image
+		want := "new-registry/app:v1.2.3"
 		if got != want {
-			t.Errorf("Execute() got = %v, want %v", got, want)
+			t.Errorf("Execute() got image = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("Updates StatefulSet Replicas", func(t *testing.T) {
+	t.Run("Updates StatefulSet container image with new tag", func(t *testing.T) {
 		statefulSet := appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-statefulset",
 				Namespace: "test-namespace",
 				Annotations: map[string]string{
-					"eth-eks.velero/replicas-value-after-recovery": "5",
+					"eth-eks.velero/container-image": "new-registry/app:v2.0.0",
 				},
 			},
 			Spec: appsv1.StatefulSetSpec{
-				Replicas: int32Ptr(2),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "app",
+								Image: "old-registry/app:v1.0.0",
+							},
+						},
+					},
+				},
 			},
 		}
 
@@ -95,7 +117,6 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 		if err != nil {
 			t.Errorf("Error converting StatefulSet to unstructured: %v", err)
 		}
-
 		statefulSetUnstructured["kind"] = "StatefulSet"
 
 		input := &velero.RestoreItemActionExecuteInput{
@@ -113,10 +134,15 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 			t.Errorf("Error executing plugin: %v", err)
 		}
 
-		got := output.UpdatedItem.UnstructuredContent()["spec"].(map[string]interface{})["replicas"]
-		want := int64(5)
+		var updatedStatefulSet appsv1.StatefulSet
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(output.UpdatedItem.UnstructuredContent(), &updatedStatefulSet); err != nil {
+			t.Errorf("Error converting output to StatefulSet: %v", err)
+		}
+
+		got := updatedStatefulSet.Spec.Template.Spec.Containers[0].Image
+		want := "new-registry/app:v2.0.0"
 		if got != want {
-			t.Errorf("Execute() got = %v, want %v", got, want)
+			t.Errorf("Execute() got image = %v, want %v", got, want)
 		}
 	})
 
@@ -127,7 +153,16 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(2),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "app",
+								Image: "original/image:v1.0.0",
+							},
+						},
+					},
+				},
 			},
 		}
 
@@ -135,7 +170,6 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 		if err != nil {
 			t.Errorf("Error converting Deployment to unstructured: %v", err)
 		}
-
 		deploymentUnstructured["kind"] = "Deployment"
 
 		input := &velero.RestoreItemActionExecuteInput{
@@ -153,51 +187,15 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 			t.Errorf("Error executing plugin: %v", err)
 		}
 
-		got := output.UpdatedItem.UnstructuredContent()["spec"].(map[string]interface{})["replicas"]
-		want := int64(2)
+		var updatedDeployment appsv1.Deployment
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(output.UpdatedItem.UnstructuredContent(), &updatedDeployment); err != nil {
+			t.Errorf("Error converting output to Deployment: %v", err)
+		}
+
+		got := updatedDeployment.Spec.Template.Spec.Containers[0].Image
+		want := "original/image:v1.0.0"
 		if got != want {
-			t.Errorf("Execute() got = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("Returns error when annotation value is invalid", func(t *testing.T) {
-		deployment := appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-deployment",
-				Namespace: "test-namespace",
-				Annotations: map[string]string{
-					"eth-eks.velero/replicas-value-after-recovery": "invalid",
-				},
-			},
-			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(2),
-			},
-		}
-
-		deploymentUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&deployment)
-		if err != nil {
-			t.Errorf("Error converting Deployment to unstructured: %v", err)
-		}
-
-		deploymentUnstructured["kind"] = "Deployment"
-
-		input := &velero.RestoreItemActionExecuteInput{
-			Item: &unstructured.Unstructured{
-				Object: deploymentUnstructured,
-			},
-		}
-
-		plugin := &RestorePluginV2{
-			log: logrus.New(),
-		}
-
-		_, err = plugin.Execute(input)
-		if err == nil {
-			t.Error("Expected error when parsing invalid replicas value, got nil")
-		}
-		expectedError := "failed to parse replicas value: strconv.ParseInt: parsing \"invalid\": invalid syntax"
-		if err.Error() != expectedError {
-			t.Errorf("Expected error message %q, got %q", expectedError, err.Error())
+			t.Errorf("Execute() got image = %v, want %v", got, want)
 		}
 	})
 }

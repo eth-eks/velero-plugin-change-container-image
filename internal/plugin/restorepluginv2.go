@@ -1,13 +1,14 @@
 package plugin
 
 import (
-	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
 	apps "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -26,7 +27,7 @@ func NewRestorePluginV2(log logrus.FieldLogger) *RestorePluginV2 {
 // method -- it's used to tell velero what name it was registered under. The plugin implementation
 // must define it, but it will never actually be called.
 func (p *RestorePluginV2) Name() string {
-	return "eth-eks/update-replicas"
+	return "eth-eks/change-container-image"
 }
 
 // AppliesTo returns information about which resources this action should be invoked for.
@@ -43,14 +44,9 @@ func (p *RestorePluginV2) AppliesTo() (velero.ResourceSelector, error) {
 // Execute allows the RestorePlugin to perform arbitrary logic with the item being restored
 func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (*velero.RestoreItemActionExecuteOutput, error) {
 	item := input.Item.(*unstructured.Unstructured)
-	replicasValue, exists := p.getReplicasAnnotation(item)
+	newImage, exists := p.getImageAnnotation(item)
 	if !exists {
 		return velero.NewRestoreItemActionExecuteOutput(input.Item), nil
-	}
-
-	replicas, err := p.parseReplicasValue(replicasValue)
-	if err != nil {
-		return nil, err
 	}
 
 	kind := item.GetObjectKind().GroupVersionKind().Kind
@@ -63,34 +59,62 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 		return nil, errors.WithStack(err)
 	}
 
-	replicasInt32, err := p.convertToInt32(replicas)
-	if err != nil {
-		return nil, err
-	}
-
-	p.log.Infof("Setting replicas to %d", replicasInt32)
-
-	if err := p.setReplicas(resource, replicasInt32, kind); err != nil {
+	if err := p.updateContainerImages(resource, newImage, kind); err != nil {
 		return nil, err
 	}
 
 	return p.createOutput(resource)
 }
 
-func (p *RestorePluginV2) getReplicasAnnotation(item *unstructured.Unstructured) (interface{}, bool) {
+func (p *RestorePluginV2) getImageAnnotation(item *unstructured.Unstructured) (string, bool) {
 	metadata := item.UnstructuredContent()["metadata"].(map[string]interface{})
 	annotations, _ := metadata["annotations"].(map[string]interface{})
-	value, exists := annotations["eth-eks.velero/replicas-value-after-recovery"]
-	return value, exists
+	value, exists := annotations["eth-eks.velero/container-image"]
+	if !exists {
+		return "", false
+	}
+	newImage, ok := value.(string)
+	if !ok {
+		p.log.Warning("Image annotation value is not a string")
+		return "", false
+	}
+	return newImage, true
 }
 
-func (p *RestorePluginV2) parseReplicasValue(value interface{}) (string, error) {
-	replicas, ok := value.(string)
-	if !ok {
-		return "", errors.New("replicas annotation value must be a string")
+func (p *RestorePluginV2) updateContainerImages(resource interface{}, newImage string, kind string) error {
+	var containers []corev1.Container
+	switch kind {
+	case "StatefulSet":
+		sts := resource.(*apps.StatefulSet)
+		containers = sts.Spec.Template.Spec.Containers
+	case "Deployment":
+		deploy := resource.(*apps.Deployment)
+		containers = deploy.Spec.Template.Spec.Containers
+	default:
+		return errors.Errorf("unsupported kind %s", kind)
 	}
-	p.log.Infof("Replicas value: %s", replicas)
-	return replicas, nil
+
+	for i := range containers {
+		currentImage := containers[i].Image
+		// Keep the existing tag if present
+		if tag := p.getImageTag(currentImage); tag != "" {
+			if newTag := p.getImageTag(newImage); newTag == "" {
+				newImage = newImage + ":" + tag
+			}
+		}
+		p.log.Infof("Updating container image from %s to %s", currentImage, newImage)
+		containers[i].Image = newImage
+	}
+
+	return nil
+}
+
+func (p *RestorePluginV2) getImageTag(image string) string {
+	parts := strings.Split(image, ":")
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return ""
 }
 
 func (p *RestorePluginV2) createResource(kind string) (interface{}, error) {
@@ -105,29 +129,6 @@ func (p *RestorePluginV2) createResource(kind string) (interface{}, error) {
 		p.log.Infof("Unsupported kind: %s", kind)
 		return nil, errors.Errorf("unsupported kind %s", kind)
 	}
-}
-
-func (p *RestorePluginV2) convertToInt32(replicas string) (int32, error) {
-	n, err := strconv.ParseInt(replicas, 10, 32)
-	if err != nil {
-		return 0, errors.Wrap(err, "failed to parse replicas value")
-	}
-	p.log.Infof("Converted replicas value to int32: %d", n)
-	return int32(n), nil
-}
-
-func (p *RestorePluginV2) setReplicas(resource interface{}, replicas int32, kind string) error {
-	switch kind {
-	case "StatefulSet":
-		sts := resource.(*apps.StatefulSet)
-		sts.Spec.Replicas = &replicas
-		p.log.Infof("Set replicas for StatefulSet: %d", replicas)
-	case "Deployment":
-		deploy := resource.(*apps.Deployment)
-		deploy.Spec.Replicas = &replicas
-		p.log.Infof("Set replicas for Deployment: %d", replicas)
-	}
-	return nil
 }
 
 func (p *RestorePluginV2) createOutput(resource interface{}) (*velero.RestoreItemActionExecuteOutput, error) {

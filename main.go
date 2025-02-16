@@ -17,14 +17,14 @@ limitations under the License.
 package main
 
 import (
-	"github.com/eth-eks/velero-plugin-update-replicas/internal/plugin"
+	"github.com/eth-eks/velero-plugin-change-container-image/internal/plugin"
 	"github.com/sirupsen/logrus"
 	"github.com/vmware-tanzu/velero/pkg/plugin/framework"
 )
 
 func main() {
 	framework.NewServer().
-		RegisterRestoreItemActionV2("eth-eks/update-replicas", newRestorePluginV2).
+		RegisterRestoreItemActionV2("eth-eks/change-container-image", newRestorePluginV2).
 		Serve()
 }
 
