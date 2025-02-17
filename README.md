@@ -1,16 +1,15 @@
-# Velero Plugin for Replica Updates
+# Velero Plugin for Container Image Updates
 
-A Velero plugin that allows you to specify the desired number of replicas for Deployments and StatefulSets when they are restored from backup.
+A Velero plugin that allows you to specify a new container image for Deployments and StatefulSets when they are restored from backup.
 
 ## Overview
 
-When restoring applications using Velero, you might want to specify a different number of replicas than what was backed up. This plugin enables you to set the desired replica count by adding an annotation to your resources before backup.
-
+When restoring applications using Velero, you might want to update the container images to a different registry or version. This plugin enables you to set the desired container image by adding an annotation to your resources before backup, while preserving the image tag if needed.
 
 ## Deploying the plugin
 
 The plugin is available as a container image from GitHub Container Registry:
-ghcr.io/eth-eks/velero-plugin-update-replicas:latest
+ghcr.io/eth-eks/velero-plugin-change-container-image:latest
 
 To deploy your plugin image to a Velero server:
 
@@ -25,21 +24,22 @@ To deploy your plugin image to a Velero server:
     ```yaml
     velero:
       initContainers:
-        - name: velero-plugin-update-replicas
-              image: ghcr.io/eth-eks/velero-plugin-update-replicas:latest
-              imagePullPolicy: Always
-              volumeMounts:
-                - name: plugins
-                  mountPath: /target
+        - name: velero-plugin-change-container-image
+          image: ghcr.io/eth-eks/velero-plugin-change-container-image:latest
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: plugins
+              mountPath: /target
     ```
 
 ## Usage
 
-3. When restoring, the plugin will automatically set the replica count according to the annotation:
+1. Add the annotation `eth-eks.velero/container-image` to your Deployment or StatefulSet resources with the desired image name (e.g., `new-registry/app`).
+2. When restoring, the plugin will automatically update the container image while preserving the original tag if not specified in the annotation:
 
-```bash
-velero restore create --from-backup my-backup
-```
+    ```bash
+    velero restore create --from-backup my-backup
+    ```
 
 ## Supported Resources
 
@@ -50,9 +50,10 @@ velero restore create --from-backup my-backup
 
 The plugin:
 1. Intercepts resources during restore
-2. Checks for the `eth-eks.velero/replicas-value-after-recovery` annotation
-3. If present, updates the replica count to the specified value
-4. If absent or invalid, maintains the original replica count
+2. Checks for the `eth-eks.velero/container-image` annotation
+3. If present, updates the container image to the specified value
+4. Preserves the existing image tag if the new image doesn't specify one
+5. If absent, maintains the original container image
 
 ## Development
 
@@ -63,10 +64,4 @@ The plugin:
 
 ### Running Tests
 
-```bash
-go test -v ./...
 ```
-
-## License
-
-Apache License 2.0 - See [LICENSE](LICENSE) for details.

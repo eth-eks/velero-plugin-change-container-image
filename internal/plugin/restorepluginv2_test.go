@@ -199,7 +199,3 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 		}
 	})
 }
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
