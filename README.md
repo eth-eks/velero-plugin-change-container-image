@@ -45,6 +45,7 @@ To deploy your plugin image to a Velero server:
 
 - Deployments
 - StatefulSets
+- CronJobs
 
 ## How It Works
 

@@ -8,6 +8,7 @@ import (
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
 	apps "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,7 +38,7 @@ func (p *RestorePluginV2) Name() string {
 // selector. A zero-valued ResourceSelector matches all resources.
 func (p *RestorePluginV2) AppliesTo() (velero.ResourceSelector, error) {
 	return velero.ResourceSelector{
-		IncludedResources: []string{"statefulsets", "deployments"},
+		IncludedResources: []string{"statefulsets", "deployments", "cronjobs"},
 	}, nil
 }
 
@@ -90,6 +91,9 @@ func (p *RestorePluginV2) updateContainerImages(resource interface{}, newImage s
 	case "Deployment":
 		deploy := resource.(*apps.Deployment)
 		containers = deploy.Spec.Template.Spec.Containers
+	case "CronJob":
+		cronJob := resource.(*batchv1.CronJob)
+		containers = cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers
 	default:
 		return errors.Errorf("unsupported kind %s", kind)
 	}
@@ -125,6 +129,9 @@ func (p *RestorePluginV2) createResource(kind string) (interface{}, error) {
 	case "Deployment":
 		p.log.Infof("Creating Deployment resource")
 		return &apps.Deployment{}, nil
+	case "CronJob":
+		p.log.Infof("Creating CronJob resource")
+		return &batchv1.CronJob{}, nil
 	default:
 		p.log.Infof("Unsupported kind: %s", kind)
 		return nil, errors.Errorf("unsupported kind %s", kind)

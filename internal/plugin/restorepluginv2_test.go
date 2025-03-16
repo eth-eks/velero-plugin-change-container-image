@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -14,13 +15,13 @@ import (
 )
 
 func TestRestorePluginV2_AppliesTo(t *testing.T) {
-	t.Run("Only applies to Deployments and StatefulSets", func(t *testing.T) {
+	t.Run("Only applies to Deployments and StatefulSets and CronJobs", func(t *testing.T) {
 		plugin := &RestorePluginV2{
 			log: logrus.New(),
 		}
 
 		want := velero.ResourceSelector{
-			IncludedResources: []string{"statefulsets", "deployments"},
+			IncludedResources: []string{"statefulsets", "deployments", "cronjobs"},
 		}
 		got, err := plugin.AppliesTo()
 		if err != nil {
@@ -194,6 +195,66 @@ func TestRestorePluginV2_Execute(t *testing.T) {
 
 		got := updatedDeployment.Spec.Template.Spec.Containers[0].Image
 		want := "original/image:v1.0.0"
+		if got != want {
+			t.Errorf("Execute() got image = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Updates CronJob container image and preserves tag", func(t *testing.T) {
+		cronJob := batchv1.CronJob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-cronjob",
+				Namespace: "test-namespace",
+				Annotations: map[string]string{
+					"eth-eks.velero/container-image": "new-registry/app",
+				},
+			},
+			Spec: batchv1.CronJobSpec{
+				JobTemplate: batchv1.JobTemplateSpec{
+					Spec: batchv1.JobSpec{
+						Template: corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Name:  "app",
+										Image: "old-registry/app:v1.2.3",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		cronJobUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&cronJob)
+		if err != nil {
+			t.Errorf("Error converting CronJob to unstructured: %v", err)
+		}
+		cronJobUnstructured["kind"] = "CronJob"
+
+		input := &velero.RestoreItemActionExecuteInput{
+			Item: &unstructured.Unstructured{
+				Object: cronJobUnstructured,
+			},
+		}
+
+		plugin := &RestorePluginV2{
+			log: logrus.New(),
+		}
+
+		output, err := plugin.Execute(input)
+		if err != nil {
+			t.Errorf("Error executing plugin: %v", err)
+		}
+
+		var updatedCronJob batchv1.CronJob
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(output.UpdatedItem.UnstructuredContent(), &updatedCronJob); err != nil {
+			t.Errorf("Error converting output to CronJob: %v", err)
+		}
+
+		got := updatedCronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image
+		want := "new-registry/app:v1.2.3"
 		if got != want {
 			t.Errorf("Execute() got image = %v, want %v", got, want)
 		}
